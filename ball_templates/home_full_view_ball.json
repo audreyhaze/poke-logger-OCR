@@ -1,0 +1,10 @@
+{
+    "Premier": "ball_templates/premier.png", 
+    "Poke": "ball_templates/poke.png",
+    "Great": "ball_templates/great.png",
+    "Ultra": "ball_templates/ultra.png",
+    "Friend": "ball_templates/friend.png",
+    "Cherish": "ball_templates/cherish.png",
+    "Moon": "ball_templates/moon.png",
+    "Love": "ball_templates/love.png"
+}

@@ -1,0 +1,10 @@
+#folders
+/za_screenshots/
+/webcam-settings-dialog-windows-master/
+
+#files
+*.log
+*.csv
+*.xcf
+
+* - Copy.py

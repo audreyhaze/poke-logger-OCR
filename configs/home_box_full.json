@@ -1,0 +1,9 @@
+{
+    "layout": "layouts/home_full_view.json",
+    "ball": "ball_templates/home_full_view_ball.json",
+    "origin": "origin_templates/home_full_view_origin.json",
+    "female_color": "205, 0, 0",
+    "male_color": "0, 55, 255",
+    "gender_tolerance": 40,
+    "gender_sample_pos": "18, 33"
+}
