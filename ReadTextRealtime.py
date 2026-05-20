@@ -8,10 +8,12 @@ import pytesseract
 import re
 import csv
 import time
+import datetime
 import numpy as np
 from threading import Thread
 from queue import Queue
 from skimage.metrics import structural_similarity as ssim
+from subprocess import Popen
 
 # Path to your tesseract exe
 pytesseract.pytesseract.tesseract_cmd = r"D:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -134,6 +136,16 @@ def parse_xy_string(s):
         return tuple(int(v) for v in s)
     raise ValueError(f"Invalid XY format: {s}")
 
+def open_cam_settings():
+    folder = r"D:\Pokemon\MyTools\HomeDataPuller\webcam-settings-dialog-windows-master"
+    bat_file = os.path.join(folder, "launch.bat")
+
+    if not os.path.exists(bat_file):
+        print(f"[ERROR] launch.bat not found: {bat_file}")
+        return
+
+    Popen([bat_file], cwd=folder, shell=True)
+
 def load_full_configuration(main_config):
     """
     Loads layout/ball/origin plus gender settings from main config.
@@ -143,6 +155,7 @@ def load_full_configuration(main_config):
     layout_path = main_config.get("layout")
     ball_path   = main_config.get("ball")
     origin_path = main_config.get("origin")
+    ability_path   = "ability_template"
     
     # sensible defaults if not provided
     male_color_raw   = main_config.get("male_color", "100,128,255")
@@ -181,8 +194,9 @@ def load_full_configuration(main_config):
     regions = load_layout(layout_path)
     ball_templates = load_ball_templates(ball_path)
     origin_templates = load_origin_templates(origin_path)
+    ability_templates = load_images_from_folder(ability_path)
 
-    return regions, ball_templates, origin_templates, male_color, female_color, gender_tolerance, gender_sample_pos
+    return regions, ball_templates, origin_templates, ability_templates, male_color, female_color, gender_tolerance, gender_sample_pos
 
 # -------------------------
 # Helper / image utilities
@@ -211,6 +225,20 @@ def cleanAllButDate(text):
     pattern = r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b"
     match = re.search(pattern, text)
     return match.group() if match else "NODATEFOUND"
+
+def checkIfReigonInDesc(text):
+    if not text:
+        return ""
+
+    #print("incoming text: '" + text + "'")
+    match = re.search(r"the\s+(.+?)\s+region", text, re.IGNORECASE)
+
+    if match:
+        name = match.group(1)
+        return name
+    
+    return ""
+
 
 def color_close(c1, c2, tol):
     return all(abs(int(a) - int(b)) <= tol for a, b in zip(c1, c2))
@@ -258,6 +286,9 @@ def compare_ball(img, template):
 
 def identify_ball(pil_crop, ball_templates, threshold=0.7):
     """Return (best_name_or_empty_string, best_score)."""
+
+    problemBalls = {"ajet", "awing", "aheavy", "aleaden", "agigaton"}
+
     icon = cv2.cvtColor(np.array(pil_crop), cv2.COLOR_RGB2BGR)
     best_match, best_score = None, -1
     if not ball_templates:
@@ -312,6 +343,118 @@ def identify_origin_template(pil_crop, templates, threshold=0.69):
             best_match, best_score = name, score
     return (best_match if best_score >= threshold else "", best_score)
 
+def check_if_ability_exists(text):
+    if not text: 
+        return ""
+    
+    text = text.strip()
+    text = re.sub(r'[^a-zA-Z]', '', text)
+
+    return text
+
+
+def get_dex_name_from_num(text, json_path="poke_data/PokeDex.json"):
+    if not text:
+        return ""
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            dex_map = json.load(f)
+
+        # remove spaces/newlines
+        text = text.strip()
+
+        # remove leading zeroes
+        text = str(int(text))
+
+        pokemon = dex_map.get(text, {})
+
+        return pokemon.get("NAME", "")
+
+    except Exception as e:
+        print(f"Error comparing dex number: {e}")
+        return ""
+    
+def compare_dex_to_name(dexnumname, name):
+    if not dexnumname or not name:
+        return 0.0
+
+    try:
+        # lowercase
+        dexnumname = dexnumname.lower()
+        name = name.lower()
+
+        # remove punctuation/spaces/symbols
+        dexnumname = re.sub(r'[^a-z0-9]', '', dexnumname)
+        name = re.sub(r'[^a-z0-9]', '', name)
+
+        # exact match
+        if dexnumname == name:
+            return 1.0
+
+        # character similarity
+        matches = 0
+        max_len = max(len(dexnumname), len(name))
+
+        for a, b in zip(dexnumname, name):
+            if a == b:
+                matches += 1
+
+        return matches / max_len if max_len > 0 else 0.0
+
+    except Exception as e:
+        print(f"compare_dex_to_name error: {e}")
+        return 0.0
+    
+
+def compare_nick_to_name(name, nickname):
+    if not nickname or not name:
+        return 0.0
+
+    try:
+        # lowercase
+        nickname = nickname.lower()
+        name = name.lower()
+
+        # remove accents manually
+        accent_map = {
+            "á":"a","à":"a","â":"a","ä":"a","ã":"a","å":"a",
+            "é":"e","è":"e","ê":"e","ë":"e",
+            "í":"i","ì":"i","î":"i","ï":"i",
+            "ó":"o","ò":"o","ô":"o","ö":"o","õ":"o",
+            "ú":"u","ù":"u","û":"u","ü":"u",
+            "ç":"c","ñ":"n",
+            "ý":"y","ÿ":"y"
+        }
+
+        for accented, plain in accent_map.items():
+            nickname = nickname.replace(accented, plain)
+            name = name.replace(accented, plain)
+
+        # remove ALL non-alphanumeric characters
+        nickname = re.sub(r'[^a-z0-9]', '', nickname)
+        name = re.sub(r'[^a-z0-9]', '', name)
+
+        # exact match
+        if nickname == name:
+            return 1.0
+
+        # similarity score
+        matches = 0
+        max_len = max(len(nickname), len(name))
+
+        for a, b in zip(nickname, name):
+            if a == b:
+                matches += 1
+
+        return matches / max_len if max_len > 0 else 0.0
+
+    except Exception as e:
+        print(f"compare_nick_to_name error: {e}")
+        return 0.0
+    
+
+    
 
 def clean_text_field(s):
     """Strip leading/trailing whitespace and common trailing punctuation."""
@@ -325,14 +468,14 @@ def clean_text_field(s):
 def extract_data(pil_img,
                  regions,
                  ball_templates,
-                 origin_templates,
+                 origin_templates, ability_templates,
                  male_color, female_color, gender_tolerance, gender_sample_pos):
     """
     Extracts all fields from an input PIL image using the provided regions
     and template sets. Returns list of fields matching CSV schema.
     """
     # safety checks
-    for required in ("name","nickname","ot","gender","lvl","nature","ability","catchdate","ball","origin"):
+    for required in ("name","nickname","ot","gender","lvl","nature","ability","catchdate","ball","origin","dexnum"):
         if required not in regions:
             raise KeyError(f"Region '{required}' missing from layout")
 
@@ -350,32 +493,44 @@ def extract_data(pil_img,
 
     name = pytesseract.image_to_string(crops['name'], config=ocr_config).strip()
     nickname = pytesseract.image_to_string(crops['nickname'], config=ocr_config).strip()
-    
+    dexnum = pytesseract.image_to_string(crops['dexnum'], config=ocr_config_digits).strip()
+    dexnumname = get_dex_name_from_num(dexnum)
+    if compare_dex_to_name(dexnumname, name) > .85:
+        name = dexnumname
+    dexnum = str(int(dexnum))
+
+    #print(compare_nick_to_name(name, nickname))
+    if compare_nick_to_name(name, nickname) > .85:
+        nickname = ""
+
     ot_raw = pytesseract.image_to_string(crops['ot'], config=ocr_config)
     ot = clean_text_field(ot_raw).strip()
 
     lvl_img = preprocess_for_ocr(crops['lvl'])
     lvl = pytesseract.image_to_string(lvl_img, config=ocr_config_digits).strip()
     nature = pytesseract.image_to_string(crops['nature'], config=ocr_config).strip()
-    ability = pytesseract.image_to_string(crops['ability'], config=ocr_config).strip()
 
-    date_img = preprocess_for_ocr(crops['catchdate'])
-    catchdate_raw = pytesseract.image_to_string(date_img, config=ocr_config_date)
-    print(catchdate_raw)
+    ability = pytesseract.image_to_string(crops['ability'], config=ocr_config).strip()
+    ability = check_if_ability_exists(ability)
+
+    desc_img = preprocess_for_ocr(crops['catchdate'])
+    catchdate_raw = pytesseract.image_to_string(desc_img, config=ocr_config_date)
     catchdate = cleanAllButDate(catchdate_raw)
 
-    # Ball detection (uses provided ball_templates)
     ball_name, ball_score = identify_ball(crops['ball'], ball_templates)
     print(f"Ball Type Confidence: {ball_score:.3f} | {ball_name}")
 
-    # Origin detection
     origin_name, origin_score = identify_origin_template(crops['origin'], origin_templates, threshold=0.4)
     print(f"Origin Mark Confidence: {origin_score:.3f} | {origin_name}")
 
-    return [name, nickname, ot, lvl, gender, nature, ability, catchdate, ball_name, origin_name]
+    if origin_score < .25:
+        origin_desc = pytesseract.image_to_string(desc_img, config=ocr_config)
+        origin_name = checkIfReigonInDesc(origin_desc)
+
+    return [dexnum, name, nickname, ot, lvl, gender, nature, ability, catchdate, ball_name, origin_name]
 
 def process_queue(queue, csv_file,
-                  regions, ball_templates, origin_templates,
+                  regions, ball_templates, origin_templates, ability_templates,
                   male_color, female_color, gender_tolerance, gender_sample_pos):
     """Background thread to process OCR without blocking video feed"""
     while True:
@@ -385,12 +540,12 @@ def process_queue(queue, csv_file,
         pil_img = item
         try:
             row = extract_data(pil_img,
-                               regions, ball_templates, origin_templates,
+                               regions, ball_templates, origin_templates, ability_templates,
                                male_color, female_color, gender_tolerance, gender_sample_pos)
             with open(csv_file, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(row)
-            print(f"Captured: {row[0]} | OT: {row[2]} | Lv.{row[3]}")
+            print(f"Captured: [{row[0]}] {row[1]} ({row[2]}) | OT: {row[3]} | Lv.{row[4]}")
         except Exception as e:
             print(f"ERROR: failed to process: {e}")
         finally:
@@ -420,6 +575,7 @@ def main():
         (regions,
          ball_templates,
          origin_templates,
+         ability_templates,
          male_color,
          female_color,
          gender_tolerance,
@@ -428,15 +584,20 @@ def main():
         print(f"[FATAL] Failed loading configuration: {e}")
         return
 
-    print("Regions loaded:", list(regions.keys()))
-    print("Ball templates:", list(ball_templates.keys()))
-    print("Origin templates:", list(origin_templates.keys()))
-    print("Gender settings:", male_color, female_color, gender_tolerance, gender_sample_pos)
+    #print("Regions loaded:", list(regions.keys()))
+    #print("Ball templates:", list(ball_templates.keys()))
+    #print("Origin templates:", list(origin_templates.keys()))
+    #print("Gender settings:", male_color, female_color, gender_tolerance, gender_sample_pos)
 
     # Setup CSV
     outdir = "output"
     os.makedirs(outdir, exist_ok=True)
-    csv_file = os.path.join("output", f"{config_name}_pokemon_data.csv")
+    createtime = datetime.datetime.now()
+    #timeClean = createtime.strftime("%m-%d-%Y_%H.%M")
+    timeClean = ""
+    #print("Current time: " + timeClean)
+
+    csv_file = os.path.join("output", f"{config_name}_pokemon_data_{timeClean}.csv")
     if not os.path.exists(csv_file):
         with open(csv_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -450,7 +611,7 @@ def main():
     worker = Thread(
         target=process_queue,
         args=(process_queue_obj, csv_file,
-              regions, ball_templates, origin_templates,
+              regions, ball_templates, origin_templates, ability_templates,
               male_color, female_color, gender_tolerance, gender_sample_pos),
         daemon=True
     )
@@ -576,6 +737,7 @@ def main():
             break
         elif key == 9:  # TAB
             print("Opening settings dialogue (not implemented)")
+            open_cam_settings()
         elif key == 32:  # SPACE capture
             current_time = time.time()
             if current_time - last_capture_time < capture_cooldown:
